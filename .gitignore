@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec.bak
+assets/app.ico
+*.ipkg
+.pytest_cache/
+*.pyc
+
