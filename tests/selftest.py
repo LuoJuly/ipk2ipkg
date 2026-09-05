@@ -112,12 +112,14 @@ def main() -> None:
         with tarfile.open(result.output, "r:gz") as tf:
             compose = tf.extractfile("demo_app/app/docker-compose.yaml").read().decode()
             entry = tf.extractfile("demo_app/app/entrypoint.sh").read().decode()
+            demo = tf.getmember("demo_app/app/rootfs/usr/bin/demo")
         assert "./data:/data" in compose
         assert "/opt/pkg/data" not in compose
-        assert "./rootfs:/opt/pkg:ro" in compose
+        assert "working_dir: /data" in compose
         assert "entrypoint.sh" in compose
         assert "APP_COMMAND" in compose
-        assert "link_dir" in entry
+        assert "install_bins" in entry
+        assert demo.mode & 0o111, hex(demo.mode)
         print("OK", result.output)
         print("version", result.spec.version)
         print("command", result.spec.command)

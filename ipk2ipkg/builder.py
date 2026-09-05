@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import tarfile
@@ -159,30 +160,31 @@ def _yaml_quote(value: str) -> str:
 
 
 ENTRYPOINT_SCRIPT = """#!/bin/sh
-set -e
-export PATH="/opt/pkg/usr/sbin:/opt/pkg/usr/bin:/opt/pkg/sbin:/opt/pkg/bin:$PATH"
+export PATH="/opt/pkg/usr/sbin:/opt/pkg/usr/bin:/opt/pkg/sbin:/opt/pkg/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export LD_LIBRARY_PATH="/opt/pkg/lib:/opt/pkg/usr/lib:${LD_LIBRARY_PATH:-}"
 export HOME="${HOME:-/data}"
 mkdir -p /data
+cd /data || true
 
-link_dir() {
+install_bins() {
   src="$1"
   dest="$2"
   [ -d "$src" ] || return 0
   mkdir -p "$dest"
   for f in "$src"/*; do
-    [ -e "$f" ] || continue
+    [ -f "$f" ] || continue
     name="$(basename "$f")"
-    ln -sf "$f" "$dest/$name"
+    cp -f "$f" "$dest/$name"
+    chmod 0755 "$dest/$name" 2>/dev/null || true
   done
 }
 
-link_dir /opt/pkg/usr/bin /usr/bin
-link_dir /opt/pkg/usr/sbin /usr/sbin
-link_dir /opt/pkg/bin /bin
-link_dir /opt/pkg/sbin /sbin
+# Windows-built ipkg often loses Unix +x. Copy onto Alpine's writable /usr/bin and chmod.
+install_bins /opt/pkg/usr/bin /usr/bin
+install_bins /opt/pkg/usr/sbin /usr/sbin
+install_bins /opt/pkg/bin /bin
+install_bins /opt/pkg/sbin /sbin
 
-# Persist packaged /etc on the writable /data volume. Never nest mounts under /opt/pkg:ro.
 if [ -d /opt/pkg/etc ]; then
   mkdir -p /data/etc
   for f in /opt/pkg/etc/*; do
@@ -198,7 +200,15 @@ if [ -d /opt/pkg/etc ]; then
 fi
 
 if [ -n "$APP_COMMAND" ]; then
-  exec /bin/sh -c "$APP_COMMAND"
+  base="$(basename "$APP_COMMAND")"
+  if [ -f "/usr/bin/$base" ]; then
+    chmod 0755 "/usr/bin/$base" 2>/dev/null || true
+    echo "starting /usr/bin/$base"
+    exec "/usr/bin/$base"
+  fi
+  chmod 0755 "$APP_COMMAND" 2>/dev/null || true
+  echo "starting $APP_COMMAND"
+  exec /bin/sh -c "exec $APP_COMMAND"
 fi
 exec sleep infinity
 """
@@ -224,7 +234,7 @@ def render_compose(spec: IpkgSpec) -> str:
         "          cpus: ${CPUS_LIMIT}",
         "          memory: ${MEMORY_LIMIT}",
         "    restart: ${RESTART}",
-        "    working_dir: /opt/pkg",
+        "    working_dir: /data",
         "    environment:",
         "      - PATH=/opt/pkg/usr/sbin:/opt/pkg/usr/bin:/opt/pkg/sbin:/opt/pkg/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "      - LD_LIBRARY_PATH=/opt/pkg/lib:/opt/pkg/usr/lib",
@@ -362,9 +372,34 @@ def pack_ipkg(app_dir: Path, output_file: Path) -> Path:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     if output_file.exists():
         output_file.unlink()
-    with tarfile.open(output_file, "w:gz") as tf:
-        tf.add(app_dir, arcname=app_dir.name)
+    with tarfile.open(output_file, "w:gz", format=tarfile.GNU_FORMAT) as tf:
+        _add_path_to_tar(tf, app_dir, app_dir.name)
     return output_file
+
+
+def _looks_executable(name: str, data: bytes) -> bool:
+    if data.startswith(b"\x7fELF") or data.startswith(b"#!"):
+        return True
+    return name.endswith(".sh") or name == "entrypoint.sh"
+
+
+def _add_path_to_tar(tf: tarfile.TarFile, src: Path, arcname: str) -> None:
+    arcname = arcname.replace("\\", "/")
+    info = tarfile.TarInfo(arcname)
+    info.mtime = int(src.stat().st_mtime)
+    info.uid = 0
+    info.gid = 0
+    if src.is_dir():
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o755
+        tf.addfile(info)
+        for item in sorted(src.iterdir(), key=lambda p: p.name.lower()):
+            _add_path_to_tar(tf, item, f"{arcname}/{item.name}")
+        return
+    data = src.read_bytes()
+    info.size = len(data)
+    info.mode = 0o755 if _looks_executable(src.name, data) else 0o644
+    tf.addfile(info, io.BytesIO(data))
 
 
 def _copy_tree(src: Path, dest: Path) -> None:
