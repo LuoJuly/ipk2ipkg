@@ -49,6 +49,17 @@ def suggest_spec(packages: list[IpkPackage]) -> IpkgSpec:
     port = guess_port(primary.control.package, all_files)
     command = pick_command(primary.control.package, all_exec)
     maintainer = primary.control.maintainer.split("<")[0].strip() if primary.control.maintainer else "ipk2ipkg"
+    extra_env: dict[str, str] = {}
+    cap_add: list[str] = []
+    need_tun = False
+    memory = "128MB"
+    pkg_key = (primary.control.package or "").lower()
+    if "ninja" in pkg_key:
+        extra_env["NINJA_LISTEN"] = "0.0.0.0"
+        extra_env["NINJA_PORT"] = str(port)
+        cap_add = ["NET_ADMIN", "NET_RAW"]
+        need_tun = True
+        memory = "512MB"
     return IpkgSpec(
         name=name,
         display_name=display,
@@ -58,6 +69,10 @@ def suggest_spec(packages: list[IpkPackage]) -> IpkgSpec:
         command=command,
         host_port=port,
         container_port=port,
+        extra_env=extra_env,
+        cap_add=cap_add,
+        need_tun=need_tun,
+        memory=memory,
         changelog=f"{version} - converted from {primary.path.name}\n",
     )
 

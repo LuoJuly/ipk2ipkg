@@ -108,6 +108,16 @@ def main() -> None:
         assert result.output.suffix == ".ipkg"
         assert result.spec.version == "1.2.3"
         assert result.spec.name == "demo_app"
+        import tarfile
+        with tarfile.open(result.output, "r:gz") as tf:
+            compose = tf.extractfile("demo_app/app/docker-compose.yaml").read().decode()
+            entry = tf.extractfile("demo_app/app/entrypoint.sh").read().decode()
+        assert "./data:/data" in compose
+        assert "/opt/pkg/data" not in compose
+        assert "./rootfs:/opt/pkg:ro" in compose
+        assert "entrypoint.sh" in compose
+        assert "APP_COMMAND" in compose
+        assert "link_dir" in entry
         print("OK", result.output)
         print("version", result.spec.version)
         print("command", result.spec.command)

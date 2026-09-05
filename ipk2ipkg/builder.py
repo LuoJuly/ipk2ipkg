@@ -146,6 +146,8 @@ class IpkgSpec:
     changelog: str = ""
     readme: str = ""
     extra_env: dict[str, str] = field(default_factory=dict)
+    cap_add: list[str] = field(default_factory=list)
+    need_tun: bool = False
 
 
 def _yaml_quote(value: str) -> str:
@@ -154,6 +156,52 @@ def _yaml_quote(value: str) -> str:
     if re.search(r'[:#{}[\],&*?|!<>=%@"\'\n]', value) or value.strip() != value:
         return json.dumps(value, ensure_ascii=False)
     return value
+
+
+ENTRYPOINT_SCRIPT = """#!/bin/sh
+set -e
+export PATH="/opt/pkg/usr/sbin:/opt/pkg/usr/bin:/opt/pkg/sbin:/opt/pkg/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/pkg/lib:/opt/pkg/usr/lib:${LD_LIBRARY_PATH:-}"
+export HOME="${HOME:-/data}"
+mkdir -p /data
+
+link_dir() {
+  src="$1"
+  dest="$2"
+  [ -d "$src" ] || return 0
+  mkdir -p "$dest"
+  for f in "$src"/*; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f")"
+    ln -sf "$f" "$dest/$name"
+  done
+}
+
+link_dir /opt/pkg/usr/bin /usr/bin
+link_dir /opt/pkg/usr/sbin /usr/sbin
+link_dir /opt/pkg/bin /bin
+link_dir /opt/pkg/sbin /sbin
+
+# Persist packaged /etc on the writable /data volume. Never nest mounts under /opt/pkg:ro.
+if [ -d /opt/pkg/etc ]; then
+  mkdir -p /data/etc
+  for f in /opt/pkg/etc/*; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f")"
+    if [ ! -e "/data/etc/$name" ]; then
+      cp -a "$f" "/data/etc/$name"
+    fi
+    if [ ! -e "/etc/$name" ]; then
+      ln -sf "/data/etc/$name" "/etc/$name"
+    fi
+  done
+fi
+
+if [ -n "$APP_COMMAND" ]; then
+  exec /bin/sh -c "$APP_COMMAND"
+fi
+exec sleep infinity
+"""
 
 
 def render_compose(spec: IpkgSpec) -> str:
@@ -180,10 +228,13 @@ def render_compose(spec: IpkgSpec) -> str:
         "    environment:",
         "      - PATH=/opt/pkg/usr/sbin:/opt/pkg/usr/bin:/opt/pkg/sbin:/opt/pkg/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "      - LD_LIBRARY_PATH=/opt/pkg/lib:/opt/pkg/usr/lib",
+        "      - HOME=/data",
+        "      - APP_COMMAND=" + _yaml_quote(command_line),
         "    volumes:",
+        "      - ./entrypoint.sh:/entrypoint.sh:ro",
         "      - ./rootfs:/opt/pkg:ro",
-        "      - ./data:/opt/pkg/data",
-        "    command: " + _yaml_quote(command_line),
+        "      - ./data:/data",
+        "    command: /bin/sh /entrypoint.sh",
         "    env_file:",
         "      - ./environment",
         "    logging:",
@@ -192,6 +243,13 @@ def render_compose(spec: IpkgSpec) -> str:
         '        max-size: "10m"',
         '        max-file: "3"',
     ]
+    if spec.cap_add:
+        lines.append("    cap_add:")
+        for cap in spec.cap_add:
+            lines.append(f"      - {cap}")
+    if spec.need_tun:
+        lines.append("    device_cgroup_rules:")
+        lines.append("      - 'c 10:200 rwm'")
     if spec.host_network:
         lines.append("    network_mode: host")
     else:
@@ -279,13 +337,17 @@ def write_ipkg_tree(dest_root: Path, spec: IpkgSpec, rootfs: Path | None = None,
     (app_dir / "changelog").write_text(spec.changelog or f"{spec.version} - converted from IPK\n", encoding="utf-8")
     (app_dir / "readme").write_text(spec.readme or default_readme(spec), encoding="utf-8")
     (app_dir / "app" / "docker-compose.yaml").write_text(render_compose(spec), encoding="utf-8")
+    (app_dir / "app" / "entrypoint.sh").write_text(ENTRYPOINT_SCRIPT, encoding="utf-8", newline="\n")
     (app_dir / "app" / "option.json").write_text(render_option_json(spec), encoding="utf-8")
 
     env_lines = [f"APP_PORT_WEB={spec.host_port}"]
     for key, value in spec.extra_env.items():
         env_lines.append(f"{key}={value}")
     (app_dir / "app" / ".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
-    (app_dir / "app" / "environment").write_text("TZ=Asia/Shanghai\n", encoding="utf-8")
+    env_file = ["TZ=Asia/Shanghai", "HOME=/data"]
+    for key, value in spec.extra_env.items():
+        env_file.append(f"{key}={value}")
+    (app_dir / "app" / "environment").write_text("\n".join(env_file) + "\n", encoding="utf-8")
 
     icon = icon_png or make_app_icon_png(spec.display_name or spec.name)
     (app_dir / "ui" / "ico" / "app.png").write_bytes(icon)
