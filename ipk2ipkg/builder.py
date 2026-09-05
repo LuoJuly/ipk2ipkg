@@ -221,6 +221,13 @@ if [ -n "$APP_COMMAND" ]; then
   base="$(basename "$APP_COMMAND")"
   if [ -f "/usr/bin/$base" ]; then
     chmod 0755 "/usr/bin/$base" 2>/dev/null || true
+    # lite defaults to 127.0.0.1 unless OpenWrt; persist 0.0.0.0 so iKuai port mapping works.
+    case "$base" in
+      ninjadesktop|ninjadesktop-lite)
+        "/usr/bin/$base" config set listen "${NINJA_LISTEN:-0.0.0.0}" || true
+        "/usr/bin/$base" config set port "${NINJA_PORT:-9190}" || true
+        ;;
+    esac
     echo "starting /usr/bin/$base"
     exec "/usr/bin/$base"
   fi
@@ -258,6 +265,10 @@ def render_compose(spec: IpkgSpec) -> str:
         "      - LD_LIBRARY_PATH=/opt/pkg/lib:/opt/pkg/usr/lib",
         "      - HOME=/data",
         "      - APP_COMMAND=" + _yaml_quote(command_line),
+    ]
+    for key, value in spec.extra_env.items():
+        lines.append(f"      - {key}=" + _yaml_quote(str(value)))
+    lines += [
         "    volumes:",
         "      - ./entrypoint.sh:/entrypoint.sh:ro",
         "      - ./rootfs:/opt/pkg:ro",
@@ -283,7 +294,9 @@ def render_compose(spec: IpkgSpec) -> str:
     else:
         proto = spec.protocol.lower() if spec.protocol.lower() in {"tcp", "udp"} else "tcp"
         lines.append("    ports:")
-        lines.append(f"      - ${{HOST_IP}}:${{APP_PORT_WEB}}:{spec.container_port}/{proto}")
+        # Bind all host addresses. ${HOST_IP} is often a Docker/VLAN IP, not the LAN
+        # used to open the iKuai admin UI (e.g. 192.168.5.1).
+        lines.append(f"      - 0.0.0.0:${{APP_PORT_WEB}}:{spec.container_port}/{proto}")
         lines.append("    networks:")
         lines.append("      - doc_app_default")
     lines.append("    labels:")

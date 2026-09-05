@@ -116,11 +116,14 @@ def main() -> None:
         assert "./data:/data" in compose
         assert "/opt/pkg/data" not in compose
         assert "working_dir: /data" in compose
+        assert "0.0.0.0:${APP_PORT_WEB}:" in compose
+        assert "${HOST_IP}:" not in compose
         assert "entrypoint.sh" in compose
         assert "APP_COMMAND" in compose
         assert "install_bins" in entry
         assert "seed_share" in entry
         assert ".local/share/ninjadesktop" in entry
+        assert "config set listen" in entry
         assert demo.mode & 0o111, hex(demo.mode)
         print("OK", result.output)
         print("version", result.spec.version)
