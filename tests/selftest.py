@@ -119,6 +119,8 @@ def main() -> None:
         assert "entrypoint.sh" in compose
         assert "APP_COMMAND" in compose
         assert "install_bins" in entry
+        assert "seed_share" in entry
+        assert ".local/share/ninjadesktop" in entry
         assert demo.mode & 0o111, hex(demo.mode)
         print("OK", result.output)
         print("version", result.spec.version)

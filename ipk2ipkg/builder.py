@@ -199,6 +199,24 @@ if [ -d /opt/pkg/etc ]; then
   done
 fi
 
+# ninjadesktop-lite looks for geoip.dat under $HOME/.local/share, not /etc/ninja.
+seed_share() {
+  src="$1"
+  dest="$2"
+  [ -d "$src" ] || return 0
+  mkdir -p "$dest"
+  for f in "$src"/*; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    case "$name" in
+      *.dat|*.mmdb|*.db)
+        [ -e "$dest/$name" ] || cp -a "$f" "$dest/$name"
+        ;;
+    esac
+  done
+}
+seed_share /opt/pkg/etc/ninja "${HOME}/.local/share/ninjadesktop"
+
 if [ -n "$APP_COMMAND" ]; then
   base="$(basename "$APP_COMMAND")"
   if [ -f "/usr/bin/$base" ]; then
